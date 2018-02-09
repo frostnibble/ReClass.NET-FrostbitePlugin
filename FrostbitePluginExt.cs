@@ -60,43 +60,72 @@ namespace FrostbitePlugin
 	/// <summary>A custom node info reader which outputs Frostbite type infos.</summary>
 	public class FrostBiteNodeInfoReader : INodeInfoReader
 	{
-		public string ReadNodeInfo(BaseNode node, IntPtr nodeAddress, IntPtr nodeValue, MemoryBuffer memory)
-		{
-			// 1. try the direct value
-			var info = ReadPtrInfo(nodeValue, memory);
-			if (!string.IsNullOrEmpty(info))
-			{
-				return info;
-			}
-
-			// 2. try indirect pointer
-			var indirectPtr = memory.Process.ReadRemoteObject<IntPtr>(nodeValue);
-			if (indirectPtr.MayBeValid())
-			{
-				info = ReadPtrInfo(indirectPtr, memory);
-				if (!string.IsNullOrEmpty(info))
-				{
-					return $"Ptr -> {info}";
-				}
-
-				// 3. try weak pointer
-				var weakTempPtr = indirectPtr - IntPtr.Size;
-				if (weakTempPtr.MayBeValid())
-				{
-					var weakPtr = memory.Process.ReadRemoteObject<IntPtr>(weakTempPtr);
-					if (weakPtr.MayBeValid())
-					{
-						info = ReadPtrInfo(weakPtr, memory);
-						if (!string.IsNullOrEmpty(info))
-						{
-							return $"WeakPtr -> {info}";
-						}
-					}
-				}
-			}
-
-			return null;
-		}
+		public string ReadNodeInfo(BaseNode node, IntPtr value, MemoryBuffer memory)
+        {
+            // 1. try the direct value
+            var info = ReadPtrInfo(value, memory);
+            if (!string.IsNullOrEmpty(info))
+            {
+                return info;
+            }
+ 
+            // 2. try indirect pointer
+            var indirectPtr = memory.Process.ReadRemoteObject<IntPtr>(value);
+            if (indirectPtr.MayBeValid())
+            {
+                info = ReadPtrInfo(indirectPtr, memory);
+                if (!string.IsNullOrEmpty(info))
+                {
+                    return $"Ptr -> {info}";
+                }
+ 
+                // 3. try weak pointer
+                var weakTempPtr = indirectPtr - IntPtr.Size;
+                if (weakTempPtr.MayBeValid())
+                {
+                    var weakPtr = memory.Process.ReadRemoteObject<IntPtr>(weakTempPtr);
+                    if (weakPtr.MayBeValid())
+                    {
+                        info = ReadPtrInfo(weakPtr, memory);
+                        if (!string.IsNullOrEmpty(info))
+                        {
+                            return $"WeakPtr -> {info}";
+                        }
+                    }
+                }
+            }
+ 
+            // if the usual checks fail look for classes with typeinfo pointer @ instance + 0x08
+            var typeInfoPtr = memory.Process.ReadRemoteObject<IntPtr>(value + 0x08);
+ 
+            if (typeInfoPtr.MayBeValid())
+            {
+                // solve some of the excess gibberish returned by filtering addresses that cannot be in image
+                if (((ulong)typeInfoPtr < 0x140000000) || ((ulong)typeInfoPtr > 0x150000000)) return null;
+ 
+                var typeInfoDataPtr = memory.Process.ReadRemoteObject<IntPtr>(typeInfoPtr);
+                if (typeInfoDataPtr.MayBeValid())
+                {
+                    var namePtr = memory.Process.ReadRemoteObject<IntPtr>(typeInfoDataPtr);
+                    if (namePtr.MayBeValid())
+                    {
+                        info = memory.Process.ReadRemoteUTF8StringUntilFirstNullCharacter(namePtr, 64);
+                        if (info.Length > 0 && info[0].IsPrintable())
+                        {
+                            // fix the typeinfo component being misreported as typeinfo-array
+                            if (info.Contains("-Array"))
+                            {
+                                var typeinfo = info.Substring(0, info.Length - 6) + "-TypeInfo";
+                                return typeinfo;
+                            }
+                            else return info;
+                        }
+                    }
+                }
+            }
+ 
+            return null;
+        }
 
 		private static string ReadPtrInfo(IntPtr value, MemoryBuffer memory)
 		{
